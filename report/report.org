@@ -1,0 +1,16 @@
+#+TITLE: Report
+
+
+
+* Building the dictionary
+** Precomputing hash for dictionary
+
+** Optimization with threading
+The execution time for calculating 1000 hashes of passwords when using different number of threads:
+| No of thread | Execution time (s) |
+|            1 |           5.671739 |
+|            8 |           0.733845 |
+|           16 |           0.369838 |
+|           64 |           0.132408 |
+|          128 |           0.111056 |
+|          256 |           0.124832 |
