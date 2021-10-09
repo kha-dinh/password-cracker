@@ -298,14 +298,12 @@ int parse_line_into_input_entry(char *line, struct input_entry *entry)
     token = strtok(NULL, delim);
     if (token == NULL)
         return -1;
-    memset(entry->name, 0, sizeof(entry->name));
     memcpy(entry->name, token, strlen(token));
 
     /* key_hex */
     token = strtok(NULL, delim);
     if (token == NULL)
         return -1;
-    memset(entry->key_hex, 0, sizeof(entry->key_hex));
     memcpy(entry->key_hex, token, KEY_LEN * 2);
     return 1;
 }
@@ -328,6 +326,7 @@ int read_file_and_try_dictionary(struct hashmap *hm, const char *input_file)
     printf("Reading input file %s ...\n", input_file);
     fp = fopen(input_file, "r");
     while (1) {
+        memset(&entry, 0, sizeof(struct input_entry));
         line = malloc(1000);
         read = getline(&line, &len, fp);
         if (read == -1 || line == NULL)
@@ -391,8 +390,6 @@ int main()
     hm = hashmap_new(sizeof(struct hm_entry),
                      sizeof(struct hm_entry) * DICTIONARY_LEN_TOTAL, 0, 0,
                      hm_hash, hm_compare, NULL);
-    ret = populate_dictionary_hm(hm, DICTIONARY_FILE, DICTIONARY_LEN, true,
-                                 false, 0);
     ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH,
                                  DICTIONARY_LEN_UNHASHED, false, true, 128);
 

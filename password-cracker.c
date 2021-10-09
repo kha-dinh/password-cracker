@@ -23,23 +23,32 @@
 #define SALT "SKKU seclab"
 #define ITERATIONS 10000
 #define KEY_LEN 16
-#define PASSWORD_MAX_LEN 7
+#define PASSWORD_MAX_LEN 100
 
 struct hm_entry {
     /* Reserve 1 byte for string terminator */
     char key_hex[KEY_LEN * 2 + 1];
-    char pass[PASSWORD_MAX_LEN + 1];
+    char pass[PASSWORD_MAX_LEN];
 };
 struct input_entry {
     int id;
-    char name[64];
+    char name[PASSWORD_MAX_LEN];
     char key_hex[KEY_LEN * 2 + 1];
 };
 struct output_entry {
     int id;
-    char name[64];
-    char pass[PASSWORD_MAX_LEN + 1];
+    char name[50];
+    char pass[PASSWORD_MAX_LEN];
+    bool cracked;
 };
+
+bool output_hm_iter(const void *item, void *udata)
+{
+    const struct output_entry *hm = item;
+    printf("id: %d, name: %s, hash: %s, cracked: %s \n", hm->id, hm->name,
+           hm->pass, hm->cracked ? "yes" : "no");
+    return true;
+}
 
 int hm_compare(const void *a, const void *b, void *udata)
 {
@@ -51,6 +60,19 @@ uint64_t hm_hash(const void *item, uint64_t seed0, uint64_t seed1)
 {
     const struct hm_entry *hm = item;
     return hashmap_sip(hm->key_hex, strlen(hm->key_hex), seed0, seed1);
+}
+
+uint64_t output_hm_hash(const void *item, uint64_t seed0, uint64_t seed1)
+{
+    const struct output_entry *hm = item;
+    return hashmap_sip(&hm->id, sizeof(int), seed0, seed1);
+}
+
+int output_hm_compare(const void *a, const void *b, void *udata)
+{
+    const struct output_entry *hm_a = a;
+    const struct output_entry *hm_b = b;
+    return (hm_a->id != hm_b->id);
 }
 
 int hm_search(struct hashmap *hm, const char *key_hex, char **password)
@@ -89,12 +111,15 @@ void PBKDF2_HMAC_SHA512(const char *pass, int pass_len, const uint8_t *salt,
 }
 
 struct hashmap *hm;
+struct hashmap *output_hm;
 pthread_mutex_t hm_mutex;
 
 struct thread_args {
     struct hashmap *hm;
-    char *line;
-    bool have_hash;
+    int count;
+    char *pass;
+    char *key_b64;
+    bool calculate_hash;
 };
 
 void remove_newline(char *str)
@@ -128,88 +153,68 @@ void create_key_hex_from_password(const char *pass, char *key_hex)
 void parse_b64_into_hex(const char *b64, char *hex)
 {
     char key_bin[KEY_LEN + 1];
-    /* char key_hex[2 * KEY_LEN + 1]; */
-    /* char *token; */
-    /* remove_newline(line); */
-
-    /* Read password */
-
-    /* token = strtok(line, delim); */
-    /* if (token == NULL) */
-    /*     return -1; */
-    /* memcpy(item->pass, token, strlen(token)); */
-    /* token = strtok(NULL, delim); */
-    /* if (token == NULL) */
-    /* return -1; */
 
     Base64decode(key_bin, b64);
     bin_to_hex(key_bin, KEY_LEN, hex);
-    /* memcpy(item->key_hex, key_hex, KEY_LEN * 2); */
 }
-int create_entry_and_insert_hm(struct hashmap *hm, char *pass, char *key_b64)
+
+void create_entry(char *pass, char *key_b64, bool calculate_hash,
+                  struct hm_entry *item)
 {
     /* printf("line: %s\n", line); */
-    struct hm_entry *item = calloc(sizeof(struct hm_entry), 1);
-    /* memset(&item, 0, sizeof(struct hm_entry)); */
+    /* struct hm_entry item; // = calloc(sizeof(struct hm_entry), 1); */
+    memset(item, 0, sizeof(struct hm_entry));
 
-    /* Make sure no stray bytes */
+    /* make sure no stray bytes */
+
+    /* printf("Pass: %s\n", pass); */
+    /* printf("Hex: %s\n", key_b64); */
     remove_newline(pass);
-    memcpy((char *)item->pass, pass, strlen(pass));
-    if (key_b64 != NULL) {
+    memcpy(item->pass, pass, strlen(pass));
+    if (!calculate_hash) {
         remove_newline(key_b64);
         parse_b64_into_hex(key_b64, (char *)item->key_hex);
     } else {
         create_key_hex_from_password(pass, (char *)item->key_hex);
     }
-    /* else { */
-    /* remove_newline(line); */
-    /* create_hm_entry_from_password(line, &item); */
-    /* } */
+};
+int create_entry_and_insert_hm(struct hashmap *hm, char *pass, char *key_b64,
+                               bool calculate_hash)
+{
+    struct hm_entry item;
+    create_entry(pass, key_b64, calculate_hash, &item);
     /* Insert item to HM */
-    printf("Pass: %s\n", item->pass);
-    printf("Hex: %s\n", item->key_hex);
-    hashmap_set(hm, item);
-    free(pass);
-    if (key_b64 != NULL)
-        free(key_b64);
-    free(item);
+    hashmap_set(hm, &item);
     return 1;
 };
-/* void *pthread_process_line_and_insert_hm(void *arguments) */
-/* { */
-/*     struct thread_args *args = arguments; */
 
-/*     /\* printf("line: %s\n", args->line); *\/ */
-/*     struct hm_entry item; */
-/*     int ret = 1; */
-/*     /\* Make sure no stray bytes *\/ */
-/*     memset(&item, 0, sizeof(struct hm_entry)); */
+void *pthread_create_entry_and_insert_hm(void *arguments)
+{
+    struct thread_args *args = (struct thread_args *)arguments;
 
-/*     /\* Insert item to HM *\/ */
-/*     if (args->have_hash) { */
-/*         ret = parse_line_into_hm_entry(args->line, &item); */
-/*         if (ret < 0) */
-/*             goto exit; */
-/*     } else { */
-/*         remove_newline(args->line); /\*  *\/ */
-/*         create_hm_entry_from_password(args->line, &item); */
-/*     } */
-/*     pthread_mutex_lock(&hm_mutex); */
-/*     /\* printf("%s\n", item.pass); *\/ */
-/*     /\* printf("%s\n", item.key_hex); *\/ */
-/*     hashmap_set(hm, &item); */
-/*     pthread_mutex_unlock(&hm_mutex); */
+    /* printf("line: %s\n", args->line); */
+    struct hm_entry item;
+    create_entry(args->pass, args->key_b64, args->calculate_hash, &item);
+    pthread_mutex_lock(&hm_mutex);
+    if (args->count % 100000 == 0)
+        printf("Thread %d done\n", args->count);
+    /* printf("%s\n", item.pass); */
+    /* printf("%s\n", item.key_hex); */
+    hashmap_set(hm, &item);
+    pthread_mutex_unlock(&hm_mutex);
 
-/* exit: */
-/*     free(args->line); */
-/*     free(args); */
-/*     /\* pthread_exit(NULL); *\/ */
-/*     return NULL; */
-/* }; */
+    /* Free all resources used */
 
-int populate_dictionary_hm(struct hashmap *hm, const char *dictionary_file,
-                           const char *dictionary_hash_file, int read_count,
-                           bool use_thread, int num_threads)
+    free(args->pass);
+    free(args->key_b64);
+    free(args);
+    /* pthread_exit(NULL); */
+    return NULL;
+};
+
+void populate_dictionary_hm(struct hashmap *hm, const char *dictionary_file,
+                            const char *dictionary_hash_file, int read_count,
+                            bool use_thread, int num_threads)
 {
     /* For file and hash */
     FILE *fp = NULL;
@@ -219,7 +224,8 @@ int populate_dictionary_hm(struct hashmap *hm, const char *dictionary_file,
     char *pass = NULL;
     char *key_b64 = NULL;
     size_t len = 0;
-    int read;
+    size_t len_2 = 0;
+    int read, read_h;
     bool done_read_hash = false;
     /* clock_t time; */
     /* Works better with threads */
@@ -238,57 +244,70 @@ int populate_dictionary_hm(struct hashmap *hm, const char *dictionary_file,
 
     clock_gettime(CLOCK_MONOTONIC, &begin);
     fp = fopen(dictionary_file, "r");
-    fp_h = fopen(dictionary_hash_file, "r");
-    if (fp == NULL || fp_h == NULL)
-        return -1;
+    if (fp == NULL) {
+        printf("ERROR: cannot open %s\n", dictionary_file);
+        exit(-1);
+    }
+
+    if (dictionary_hash_file != NULL) {
+        fp_h = fopen(dictionary_hash_file, "r");
+        if (fp_h == NULL) {
+            printf("ERROR: cannot open %s\n", dictionary_file);
+            exit(-1);
+        }
+    } else {
+        done_read_hash = true;
+    }
+
     while (1) {
-        pass = calloc(100, 1);
         read = getline(&pass, &len, fp);
         if (read <= -1)
             break;
 
         if (done_read_hash != true) {
-            key_b64 = calloc(100, 1);
-            read = getline(&key_b64, &len, fp_h);
-            if (read <= -1)
+            read = getline(&key_b64, &len_2, fp_h);
+            if (read <= -1) {
+                /* free(key_b64); */
+                printf("Read all of the hashes!, count = %d\n", count);
                 done_read_hash = true;
-        } else
-            key_b64 = NULL;
+            }
+        }
+        /* key_b64 = NULL; */
 
-        /* if (!use_thread) { */
-        create_entry_and_insert_hm(hm, pass, key_b64);
+        if (!use_thread) {
+            create_entry_and_insert_hm(hm, pass, key_b64, done_read_hash);
+            free(pass);
+            free(key_b64);
+        } else {
+            args = malloc(sizeof(struct thread_args));
+            args->hm = hm;
 
-        /* } */
+            args->pass = pass;
+            args->key_b64 = key_b64;
+            args->calculate_hash = done_read_hash;
+            args->count = count;
+            thpool_add_work(pool, pthread_create_entry_and_insert_hm,
+                            (void *)args);
+        }
 
-        /* else { */
-        /*     args = malloc(sizeof(struct thread_args)); */
-        /*     args->hm = hm; */
-        /*     args->line = line; */
-        /*     args->have_hash = have_hash; */
-        /*     thpool_add_work( */
-        /*         pool, (void (*)(void *))pthread_process_line_and_insert_hm,
-         */
-        /*         (void *)args); */
-        /* } */
+        pass = NULL;
+        key_b64 = NULL;
         count++;
         if (count == read_count) {
             break;
         }
-
-        /* if (count % 1000 == 0) */
-        /*   printf("Populated %d passwords\n", count); */
     }
 
-    /* if (use_thread) { */
-    /*     printf("Waiting for threads %d to finish\n", count); */
-    /*     thpool_wait(pool); */
-    /*     thpool_destroy(pool); */
-    /* } */
+    if (use_thread) {
+        printf("Waiting for threads %d to finish\n", count);
+        thpool_wait(pool);
+    }
     printf("Finished, populated %d passwords\n", count);
 
     fclose(fp);
-    fclose(fp_h);
-
+    if (fp_h != NULL)
+        fclose(fp_h);
+    thpool_destroy(pool);
     clock_gettime(CLOCK_MONOTONIC, &end);
     execution_time = end.tv_sec - begin.tv_sec;
     execution_time += (end.tv_nsec - begin.tv_nsec) / 1000000000.0;
@@ -297,10 +316,9 @@ int populate_dictionary_hm(struct hashmap *hm, const char *dictionary_file,
     printf("Took %f seconds\n", execution_time);
     /* for (i = 0; i < 1000; i++) */
     /*   printf("%.*s\n", PASSWORD_MAX_LEN, &dictionary[i]); */
-    return 1;
 }
 
-int parse_line_into_input_entry(char *line, struct input_entry *entry)
+int parse_line_into_output_entry(char *line, struct output_entry *entry)
 {
     const char delim[2] = ":";
     char *token;
@@ -317,57 +335,51 @@ int parse_line_into_input_entry(char *line, struct input_entry *entry)
     token = strtok(NULL, delim);
     if (token == NULL)
         return -1;
-    memset(entry->name, 0, sizeof(entry->name));
     memcpy(entry->name, token, strlen(token));
 
     /* key_hex */
     token = strtok(NULL, delim);
     if (token == NULL)
         return -1;
-    memset(entry->key_hex, 0, sizeof(entry->key_hex));
-    memcpy(entry->key_hex, token, KEY_LEN * 2);
+    memcpy(entry->pass, token, strlen(token));
+    entry->cracked = false;
     return 1;
 }
-
-int read_file_and_try_dictionary(struct hashmap *hm, const char *input_file)
+void load_output_hm(struct hashmap *output_hm, const char *input_file)
 {
+
     FILE *fp = NULL;
-    int cracked = 0;
-    int i;
     char *line = NULL;
-    char *password = NULL;
-    size_t len = 0;
-    int read;
-    /* clock_t time; */
-    /* Works better with threads */
+    int read, len = 0;
+
     struct timespec begin, end;
     double execution_time;
-    struct input_entry entry;
+    struct output_entry entry;
 
     printf("Reading input file %s ...\n", input_file);
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     fp = fopen(input_file, "r");
     while (1) {
-        line = malloc(1000);
+        memset(&entry, 0, sizeof(struct output_entry));
         read = getline(&line, &len, fp);
         if (read == -1 || line == NULL)
             break;
-        printf("Got line: %s\n", line);
+        /* printf("Got line: %s\n", line); */
         /* entry = malloc(sizeof(struct input_entry)); */
-        parse_line_into_input_entry(line, &entry);
-        printf("Processing entry %d, name: %s, key_hex: %s\n", entry.id,
-               entry.name, entry.key_hex);
-        if (hm_search(hm, entry.key_hex, &password) != -1) {
-            printf("Got password: %s\n", password);
-            cracked++;
-        }
+        parse_line_into_output_entry(line, &entry);
+        /* struct hm_entry item; */
+        /* create_entry(pass, key_b64, calculate_hash, &item); */
+        /* Insert item to HM */
+        /* printf("Processing entry %d, name: %s, key_hex: %s\n", entry.id, */
+        /*        entry.name, entry.pass); */
+        hashmap_set(output_hm, &entry);
         /* if (count % 1000 == 0) */
         /*   printf("Populated %d passwords\n", count); */
     }
 
-    printf("Finished, cracked %d passwords\n", cracked);
+    /* printf("Finished, cracked %d passwords\n", cracked); */
 
     fclose(fp);
-
     clock_gettime(CLOCK_MONOTONIC, &end);
     execution_time = end.tv_sec - begin.tv_sec;
     execution_time += (end.tv_nsec - begin.tv_nsec) / 1000000000.0;
@@ -376,57 +388,73 @@ int read_file_and_try_dictionary(struct hashmap *hm, const char *input_file)
     printf("Took %f seconds\n", execution_time);
     /* for (i = 0; i < 1000; i++) */
     /*   printf("%.*s\n", PASSWORD_MAX_LEN, &dictionary[i]); */
-    return 1;
+}
+void try_crack_id_with_dictionary(struct hashmap *output_hm, int id,
+                                  struct hashmap *dictionary)
+{
+    char *found_password = NULL;
+    struct output_entry *entry;
+
+    entry = hashmap_get(output_hm, &(struct output_entry){.id = id});
+    if (!entry->cracked) {
+        printf("Trying to crack id: %d, name: %s, hash: %s ... \n", entry->id,
+               entry->name, entry->pass);
+
+        if (hm_search(dictionary, entry->pass, &found_password) != -1) {
+            struct output_entry update;
+            memset(&update, 0, sizeof(struct output_entry));
+            update.id = id;
+            update.cracked = true;
+            memcpy(update.pass, found_password, strlen(found_password));
+            memcpy(update.name, entry->name, strlen(entry->name));
+
+            printf("Found password in hashmap: %s\n", found_password);
+            hashmap_set(output_hm, &update);
+        }
+    }
 }
 
-/* void hash_benchmark() */
-/* { */
-/*     int ret = 0; */
-/*     ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH, 1000, false,
- * true, */
-/*                                  1); */
-/*     hashmap_clear(hm, false); */
-/*     ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH, 1000, false,
- * true, */
-/*                                  8); */
-/*     hashmap_clear(hm, false); */
-/*     ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH, 1000, false,
- * true, */
-/*                                  16); */
-/*     hashmap_clear(hm, false); */
-/*     ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH, 1000, false,
- * true, */
-/*                                  64); */
-/*     hashmap_clear(hm, false); */
-/*     ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH, 1000, false,
- * true, */
-/*                                  128); */
-/*     hashmap_clear(hm, false); */
-/*     ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH, 1000, false,
- * true, */
-/*                                  256); */
-/*     hashmap_clear(hm, false); */
-/* } */
+void output_hashmap_to_file(struct hashmap *output_hm, const char *file_name)
+{
+    FILE *fp = NULL;
+    int i = 0;
+    struct output_entry *entry;
+    fp = fopen(file_name, "w");
+    if (fp == NULL) {
+        printf("ERROR: cannot open %s\n", file_name);
+        exit(-1);
+    }
+    for (i = 1; i <= hashmap_count(output_hm); i++) {
+        entry = hashmap_get(output_hm, &(struct output_entry){.id = i});
+        fprintf(fp, "%d:%s:%s\n", entry->id, entry->name, entry->pass);
+    }
+}
 
 int main()
 {
-    int ret = 0;
+    int i, count = 0;
     printf("Initializing hashmap with initial capacity: %ld \n",
            sizeof(struct hm_entry) * DICTIONARY_LEN_TOTAL);
+    output_hm = hashmap_new(sizeof(struct output_entry),
+                            100000 * sizeof(struct output_entry), 0, 0,
+                            output_hm_hash, output_hm_compare, NULL);
+
     hm = hashmap_new(sizeof(struct hm_entry),
                      sizeof(struct hm_entry) * DICTIONARY_LEN_TOTAL, 0, 0,
                      hm_hash, hm_compare, NULL);
-    ret = populate_dictionary_hm(hm, DICTIONARY_FILE, DICTIONARY_HASH, 100,
-                                 false, 0);
-    /* ret = populate_dictionary_hm(hm, DICTIONARY_FILE_NO_HASH, */
-    /*                              DICTIONARY_LEN_UNHASHED, false, true, 128);
-     */
-
+    populate_dictionary_hm(hm, DICTIONARY_FILE, DICTIONARY_HASH,
+                           DICTIONARY_LEN_TOTAL, true, 128);
+    load_output_hm(output_hm, INPUT_FILE);
     printf("Total dictionary entries: %ld\n", hashmap_count(hm));
-    /* hashmap_scan(hm, hm_iter, NULL); */
+    printf("Total input entries: %ld\n", hashmap_count(output_hm));
+    count = hashmap_count(output_hm);
 
-    /* read_file_and_try_dictionary(hm, INPUT_FILE); */
-    /* char *password; */
-    /* ret = hm_search("341c7f2a7ee805522a45ab3719333a73", &password); */
-    /* printf("Found: %s\n", password); */
+    for (i = 1; i <= count; i++) {
+        try_crack_id_with_dictionary(output_hm, i, hm);
+    }
+    output_hashmap_to_file(output_hm, OUTPUT_FILE);
+
+    /* Dump content */
+    /* hashmap_scan(output_hm, output_hm_iter, NULL); */
+    /* hashmap_scan(hm, hm_iter, NULL); */
 }

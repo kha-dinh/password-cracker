@@ -5,7 +5,7 @@
 # @version 0.1
 CC = gcc
 
-CFLAGS = -pthread -Wall -std=c11
+CFLAGS = -pthread -Wall -std=c11 -ggdb3
 
 
 LFLAGS = -lssl -lcrypto -pthread -lrt
