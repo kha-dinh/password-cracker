@@ -15,18 +15,18 @@ dictionary_lines = []
 
 # request.get('raw.githubusercontent.com/danielmiessler/SecList/master/Passwords/Common-credentials/10-mil')
 
-with  io.open('10-million-password-list-top-1000000.txt', 'r', encoding="utf-8") as f:
-    for i in range(10**6):
-        line = f.readline()
-        if len(line.strip()) >= 7 and any(char.isdigit() for char in line.strip()) :
-            dictionary_lines.append(line.strip())
+for filename in os.scandir("password_lists"):
+    print(f"Opening {filename.path}")
+    encoding = "utf-8"
 
-with  io.open('100k-most-used-passwords-NCSC.txt', 'r', encoding="utf-8") as f:
-    for i in range(10**5):
-        line = f.readline()
-        if len(line.strip()) >= 7 and any(char.isdigit() for char in line.strip()) :
-            # print('line[{}]: {}'.format(i, line.strip()))
-            dictionary_lines.append(line.strip())
+    with  io.open(filename, 'r', encoding=encoding, errors="ignore") as f:
+        while True:
+            line = f.readline()
+            if len(line.strip()) >= 7 and any(char.isdigit() for char in line.strip()) :
+                dictionary_lines.append(line.strip())
+            if not line:
+                break
+
 
 unique_lines = list(set(dictionary_lines))
 
@@ -36,7 +36,8 @@ file_name = 'dictionary-preprocessed.txt'
 file_name2 = 'dictionary-hash.txt'
 
 # ratio =
-HASH_UNTIL = 140000
+# HASH_UNTIL = 140000
+HASH_UNTIL = 120000
 # TOTAL = 2000
 # PASSWORD_UNTIL = 20000
 
@@ -95,6 +96,7 @@ pool.join()
 
 
 print("Writing dictionary to file" , file_name)
+
 for line in tqdm(unique_lines[HASH_UNTIL:]):
     with open(file_name, 'a') as f:
         f.write(f'{line}\n')

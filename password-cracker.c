@@ -3,6 +3,7 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,8 +16,8 @@
 #define DICTIONARY_FILE "dictionary-preprocessed.txt"
 #define DICTIONARY_HASH "dictionary-hash.txt"
 
-#define DICTIONARY_LEN_TOTAL 439812
-#define DICTIONARY_PREHASHED 140000
+#define DICTIONARY_LEN_TOTAL 497221
+/* #define DICTIONARY_PREHASHED 140000 */
 
 #define INPUT_FILE "hashedPasswords.txt"
 #define OUTPUT_FILE "Passwords.txt"
@@ -42,6 +43,18 @@ struct output_entry {
     bool cracked;
 };
 
+void generate_random_string(char *str, size_t len)
+{
+    static const char charset[] =
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789,.-#'?!";
+    if (len) {
+        --len;
+        for (size_t i = 0; i < len; i++) {
+            str[i] = charset[rand() % (int)(sizeof(charset) - 1)];
+        }
+        str[len] = '\0';
+    }
+}
 bool output_hm_iter(const void *item, void *udata)
 {
     const struct output_entry *hm = item;
@@ -110,7 +123,8 @@ void PBKDF2_HMAC_SHA512(const char *pass, int pass_len, const uint8_t *salt,
                       key_len, key);
 }
 
-struct hashmap *hm;
+struct hashmap *dictionary_hm;
+/* struct hashmap *birthday_hm; */
 struct hashmap *output_hm;
 pthread_mutex_t hm_mutex;
 
@@ -161,11 +175,7 @@ void parse_b64_into_hex(const char *b64, char *hex)
 void create_entry(char *pass, char *key_b64, bool calculate_hash,
                   struct hm_entry *item)
 {
-    /* printf("line: %s\n", line); */
-    /* struct hm_entry item; // = calloc(sizeof(struct hm_entry), 1); */
     memset(item, 0, sizeof(struct hm_entry));
-
-    /* make sure no stray bytes */
 
     /* printf("Pass: %s\n", pass); */
     /* printf("Hex: %s\n", key_b64); */
@@ -200,7 +210,7 @@ void *pthread_create_entry_and_insert_hm(void *arguments)
         printf("Thread %d done\n", args->count);
     /* printf("%s\n", item.pass); */
     /* printf("%s\n", item.key_hex); */
-    hashmap_set(hm, &item);
+    hashmap_set(args->hm, &item);
     pthread_mutex_unlock(&hm_mutex);
 
     /* Free all resources used */
@@ -364,31 +374,18 @@ void load_output_hm(struct hashmap *output_hm, const char *input_file)
         read = getline(&line, &len, fp);
         if (read == -1 || line == NULL)
             break;
-        /* printf("Got line: %s\n", line); */
-        /* entry = malloc(sizeof(struct input_entry)); */
         parse_line_into_output_entry(line, &entry);
-        /* struct hm_entry item; */
-        /* create_entry(pass, key_b64, calculate_hash, &item); */
-        /* Insert item to HM */
-        /* printf("Processing entry %d, name: %s, key_hex: %s\n", entry.id, */
-        /*        entry.name, entry.pass); */
         hashmap_set(output_hm, &entry);
         /* if (count % 1000 == 0) */
         /*   printf("Populated %d passwords\n", count); */
     }
-
-    /* printf("Finished, cracked %d passwords\n", cracked); */
-
     fclose(fp);
     clock_gettime(CLOCK_MONOTONIC, &end);
     execution_time = end.tv_sec - begin.tv_sec;
     execution_time += (end.tv_nsec - begin.tv_nsec) / 1000000000.0;
-
-    /* execution_time = (double)() - time) / CLOCKS_PER_SEC; */
     printf("Took %f seconds\n", execution_time);
-    /* for (i = 0; i < 1000; i++) */
-    /*   printf("%.*s\n", PASSWORD_MAX_LEN, &dictionary[i]); */
 }
+
 void try_crack_id_with_dictionary(struct hashmap *output_hm, int id,
                                   struct hashmap *dictionary)
 {
@@ -396,7 +393,7 @@ void try_crack_id_with_dictionary(struct hashmap *output_hm, int id,
     struct output_entry *entry;
 
     entry = hashmap_get(output_hm, &(struct output_entry){.id = id});
-    if (!entry->cracked) {
+    if (entry->cracked == false) {
         printf("Trying to crack id: %d, name: %s, hash: %s ... \n", entry->id,
                entry->name, entry->pass);
 
@@ -413,6 +410,133 @@ void try_crack_id_with_dictionary(struct hashmap *output_hm, int id,
         }
     }
 }
+pthread_mutex_t output_hm_mutex;
+struct birthday_thread_args {
+    struct hashmap *dictionary;
+    int count;
+    struct output_entry *entry;
+};
+void *pthread_birthday_attack(void *arguments)
+{
+
+    struct birthday_thread_args *args = (struct thread_args *)arguments;
+
+    /* printf("line: %s\n", args->line); */
+    struct hm_entry item;
+
+    /* printf("%s\n", item.pass); */
+    /* printf("%s\n", item.key_hex); */
+
+    /* Free all resources used */
+
+    int attempts = 0;
+    char random_string[13];
+    char key_hex[KEY_LEN * 2 + 1];
+
+    char *found_password = NULL;
+
+    if (!args->entry->cracked) {
+
+        generate_random_string(random_string, 7);
+        create_key_hex_from_password(random_string, key_hex);
+
+        if (hm_search(args->dictionary, args->entry->pass, &found_password) !=
+            -1) {
+            printf("Duplicate found.\n");
+            pthread_exit(NULL);
+        }
+
+        if (args->count % 10000 == 0) {
+            printf("Thread %d done\n", args->count);
+            /* printf("Trying %s:%s:%s:%d\n", random_string, key_hex, */
+            /*        args->entry->pass, args->count); */
+        }
+        if (strcmp(key_hex, args->entry->pass) == 0) {
+            printf("Found collision after %d attemps, collision string = %s\n",
+                   attempts, random_string);
+            struct output_entry update;
+            memset(&update, 0, sizeof(struct output_entry));
+            update.id = args->entry->id;
+            update.cracked = true;
+            memcpy(update.pass, random_string, strlen(random_string));
+            memcpy(update.name, args->entry->name, strlen(args->entry->name));
+            pthread_mutex_lock(&output_hm_mutex);
+            hashmap_set(output_hm, &update);
+            pthread_mutex_unlock(&output_hm_mutex);
+            pthread_exit(NULL);
+        } else {
+            struct hm_entry new_entry;
+            memcpy(new_entry.pass, random_string, strlen(random_string));
+            memcpy(new_entry.key_hex, key_hex, strlen(key_hex));
+            pthread_mutex_lock(&hm_mutex);
+            hashmap_set(args->dictionary, &new_entry);
+            pthread_mutex_unlock(&hm_mutex);
+        }
+        /* printf("Found password in hashmap: %s\n", found_password); */
+    }
+    free(args);
+
+    /* pthread_exit(NULL); */
+    return NULL;
+};
+void try_crack_birthday(struct hashmap *output_hm, int id,
+                        struct hashmap *dictionary)
+{
+    struct output_entry *entry = NULL;
+    int attempts = 0;
+    int i;
+    threadpool pool;
+    struct birthday_thread_args *args;
+
+    int num_threads = 128;
+    struct timespec begin, end;
+    double execution_time;
+
+    clock_gettime(CLOCK_MONOTONIC, &begin);
+
+    printf("Initializing thread pool with %d threads\n", num_threads);
+    pool = thpool_init(num_threads);
+    /* printf("Trying to crack id: %d, name: %s, hash: %s ... \n",
+     * entry->id, */
+    /*        entry->name, entry->pass); */
+
+    entry = hashmap_get(output_hm, &(struct output_entry){.id = id});
+
+    while (1) {
+        for (i = 0; i < num_threads; i++) {
+            args = malloc(sizeof(struct birthday_thread_args));
+            args->dictionary = dictionary;
+            args->entry = entry;
+            args->count = attempts;
+            thpool_add_work(pool, pthread_birthday_attack, (void *)args);
+            attempts++;
+        }
+        thpool_wait(pool);
+
+        /* entry = hashmap_get(output_hm, &(struct output_entry){.id = id}); */
+        if (entry->cracked) {
+            break;
+        }
+
+        if (attempts >= 1000000) {
+            printf("Failed\n");
+            break;
+        }
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    execution_time = end.tv_sec - begin.tv_sec;
+    execution_time += (end.tv_nsec - begin.tv_nsec) / 1000000000.0;
+
+    /* execution_time = (double)() - time) / CLOCKS_PER_SEC; */
+    printf("Took %f seconds\n", execution_time);
+    thpool_destroy(pool);
+
+    /* https://codereview.stackexchange.com/questions/29198/random-string-generator-in-c
+     */
+    /* for (i = 0; i < 1000; i++) */
+    /*   printf("%.*s\n", PASSWORD_MAX_LEN, &dictionary[i]); */
+}
 
 void output_hashmap_to_file(struct hashmap *output_hm, const char *file_name)
 {
@@ -428,33 +552,41 @@ void output_hashmap_to_file(struct hashmap *output_hm, const char *file_name)
         entry = hashmap_get(output_hm, &(struct output_entry){.id = i});
         fprintf(fp, "%d:%s:%s\n", entry->id, entry->name, entry->pass);
     }
+    fclose(fp);
 }
 
 int main()
 {
-    int i, count = 0;
+    int i = 0;
+    srand(1);
+
     printf("Initializing hashmap with initial capacity: %ld \n",
            sizeof(struct hm_entry) * DICTIONARY_LEN_TOTAL);
+
     output_hm = hashmap_new(sizeof(struct output_entry),
                             100000 * sizeof(struct output_entry), 0, 0,
                             output_hm_hash, output_hm_compare, NULL);
 
-    hm = hashmap_new(sizeof(struct hm_entry),
-                     sizeof(struct hm_entry) * DICTIONARY_LEN_TOTAL, 0, 0,
-                     hm_hash, hm_compare, NULL);
-    populate_dictionary_hm(hm, DICTIONARY_FILE, DICTIONARY_HASH,
+    dictionary_hm = hashmap_new(sizeof(struct hm_entry),
+                                sizeof(struct hm_entry) * DICTIONARY_LEN_TOTAL,
+                                0, 0, hm_hash, hm_compare, NULL);
+    populate_dictionary_hm(dictionary_hm, DICTIONARY_FILE, DICTIONARY_HASH,
                            DICTIONARY_LEN_TOTAL, true, 128);
-    load_output_hm(output_hm, INPUT_FILE);
-    printf("Total dictionary entries: %ld\n", hashmap_count(hm));
-    printf("Total input entries: %ld\n", hashmap_count(output_hm));
-    count = hashmap_count(output_hm);
 
-    for (i = 1; i <= count; i++) {
-        try_crack_id_with_dictionary(output_hm, i, hm);
+    /* populate_dictionary_hm(dictionary_hm, DICTIONARY_FILE, DICTIONARY_HASH,
+     */
+    /*                        100000, true, 128); */
+    load_output_hm(output_hm, INPUT_FILE); /*  */
+    printf("Total dictionary entries: %ld\n", hashmap_count(dictionary_hm));
+    printf("Total input entries: %ld\n", hashmap_count(output_hm));
+
+    /* try_crack_birthday(output_hm, 1, dictionary_hm); */
+    /* hashmap_scan(output_hm, output_hm_iter, NULL); */
+    for (i = 1; i <= hashmap_count(output_hm); i++) { /*  */
+        try_crack_id_with_dictionary(output_hm, i, dictionary_hm);
     }
     output_hashmap_to_file(output_hm, OUTPUT_FILE);
 
-    /* Dump content */
-    /* hashmap_scan(output_hm, output_hm_iter, NULL); */
+    /* Dump content
     /* hashmap_scan(hm, hm_iter, NULL); */
 }

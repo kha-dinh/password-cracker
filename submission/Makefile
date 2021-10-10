@@ -5,13 +5,13 @@
 # @version 0.1
 CC = gcc
 
-CFLAGS = -pthread -Wall -std=c11
+CFLAGS = -pthread -Wall -std=c11 -ggdb3
 
 
 LFLAGS = -lssl -lcrypto -pthread -lrt
 OBJECTS = password-cracker.o hashmap.o base64.o thpool.o
 
-SUBMISSION_FILES = dictionary-preprocessed.txt dictionary-hash.txt *.h *.c *.py Makefile
+SUBMISSION_FILES = dictionary-preprocessed.txt dictionary-hash.txt *.h *.c *.py Makefile hashedPasswords.txt
 
 all: password-cracker
 
